@@ -1,0 +1,56 @@
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+
+[[redirects]]
+  from = "/api/health"
+  to = "/.netlify/functions/health"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/reports"
+  to = "/.netlify/functions/reports"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/report"
+  to = "/.netlify/functions/report"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/search"
+  to = "/.netlify/functions/search"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/notes"
+  to = "/.netlify/functions/notes"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/snapshot"
+  to = "/.netlify/functions/snapshot"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/snapshot-open"
+  to = "/.netlify/functions/snapshot-open"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/export"
+  to = "/.netlify/functions/export"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
