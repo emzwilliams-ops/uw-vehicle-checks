@@ -1,10 +1,8 @@
 import { getAppConfig } from './config.mjs';
-import { ExternalServiceError, getJson, getText, postForm, postJson } from './http.mjs';
+import { ExternalServiceError, getText, postForm, postJson, getJson } from './http.mjs';
 import { lookupSample } from './sample-data.mjs';
 
 const DVLA_BASE_URL = 'https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles';
-const GOOGLE_CSE_URL = 'https://www.googleapis.com/customsearch/v1';
-const SERPAPI_URL = 'https://serpapi.com/search.json';
 
 let motTokenCache = { token: '', expiresAt: 0 };
 
@@ -20,14 +18,30 @@ export async function buildReport(rawRegistration) {
   const sample = (await lookupSample(registration)) || {};
   const dataSources = [];
 
-  const dvlaData = await safeLookup(dataSources, 'DVLA Vehicle Enquiry Service', 'Vehicle make/model/year/tax/MOT status by registration.', Boolean(config.dvlaApiKey), () => lookupDvla(registration, config));
-  const motData = await safeLookup(dataSources, 'DVSA MOT history API', 'MOT history, mileage, failures, and advisories.', Boolean(config.motApiKey && config.motClientId && config.motClientSecret && config.motTokenUrl), () => lookupMot(registration, config));
-  const queries = buildSearchQueries(registration, dvlaData || sample.vehicle_summary || {});
-  const webSearchData = await safeLookup(dataSources, 'Open-web search provider', 'Adverts, photos, cached pages, forums, and marketplace mentions.', isSearchConfigured(config), () => runSearchQueries(queries, config));
+  const dvlaData = await safeLookup(
+    dataSources,
+    'DVLA Vehicle Enquiry Service',
+    'Vehicle make/model/year/tax/MOT status by registration.',
+    Boolean(config.dvlaApiKey),
+    () => lookupDvla(registration, config),
+  );
+  const motData = await safeLookup(
+    dataSources,
+    'DVSA MOT history API',
+    'MOT history, mileage, failures, and advisories.',
+    Boolean(config.motApiKey && config.motClientId && config.motClientSecret && config.motTokenUrl),
+    () => lookupMot(registration, config),
+  );
+
+  dataSources.push({
+    name: 'Open-web quick links',
+    status: 'Built-in links ready',
+    purpose: 'Free Google and GOV.UK links for adverts, auctions, photos, mentions, and recall follow-up.',
+  });
 
   const vehicleSummary = buildVehicleSummary(registration, sample, dvlaData);
   const motHistory = buildMotHistory(sample, motData);
-  const webFindings = buildWebFindings(registration, sample, webSearchData);
+  const webFindings = buildWebFindings(registration, sample, vehicleSummary);
   const recalls = buildRecalls(registration, sample, webFindings);
   const researchFlags = buildResearchFlags(motHistory, recalls, webFindings);
 
@@ -46,7 +60,10 @@ export async function buildReport(rawRegistration) {
 
 export async function captureSnapshot(sourceUrl) {
   const config = getAppConfig();
-  const { body, contentType } = await getText(sourceUrl, { headers: { 'User-Agent': 'UnderwritingIntelligence/1.0' }, timeoutSeconds: config.requestTimeoutSeconds });
+  const { body, contentType } = await getText(sourceUrl, {
+    headers: { 'User-Agent': 'UnderwritingIntelligence/1.0' },
+    timeoutSeconds: config.requestTimeoutSeconds,
+  });
   return { body, contentType, bodyExcerpt: truncate(stripHtml(body), 320) };
 }
 
@@ -79,69 +96,40 @@ async function safeLookup(statuses, name, purpose, configured, operation) {
 }
 
 async function lookupDvla(registration, config) {
-  return postJson(DVLA_BASE_URL, { registrationNumber: registration }, { headers: { Accept: 'application/json', 'x-api-key': config.dvlaApiKey }, timeoutSeconds: config.requestTimeoutSeconds });
+  return postJson(DVLA_BASE_URL, { registrationNumber: registration }, {
+    headers: { Accept: 'application/json', 'x-api-key': config.dvlaApiKey },
+    timeoutSeconds: config.requestTimeoutSeconds,
+  });
 }
 
 async function lookupMot(registration, config) {
   const token = await getMotAccessToken(config);
   const url = config.motLookupUrl.replace('{registration}', registration);
-  const response = await getJson(url, { headers: { Accept: 'application/json', Authorization: `Bearer ${token}`, 'X-API-Key': config.motApiKey }, timeoutSeconds: config.requestTimeoutSeconds });
+  const response = await getJson(url, {
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+      'X-API-Key': config.motApiKey,
+    },
+    timeoutSeconds: config.requestTimeoutSeconds,
+  });
   return Array.isArray(response) ? response : [response];
 }
 
 async function getMotAccessToken(config) {
   if (motTokenCache.token && Date.now() < motTokenCache.expiresAt) return motTokenCache.token;
-  const tokenResponse = await postForm(config.motTokenUrl, { grant_type: 'client_credentials', client_id: config.motClientId, client_secret: config.motClientSecret, scope: config.motScope }, { timeoutSeconds: config.requestTimeoutSeconds });
+  const tokenResponse = await postForm(config.motTokenUrl, {
+    grant_type: 'client_credentials',
+    client_id: config.motClientId,
+    client_secret: config.motClientSecret,
+    scope: config.motScope,
+  }, { timeoutSeconds: config.requestTimeoutSeconds });
   if (!tokenResponse?.access_token) throw new ExternalServiceError('MOT token response did not include access_token');
-  motTokenCache = { token: tokenResponse.access_token, expiresAt: Date.now() + Math.max((Number(tokenResponse.expires_in) || 300) - 60, 60) * 1000 };
+  motTokenCache = {
+    token: tokenResponse.access_token,
+    expiresAt: Date.now() + Math.max((Number(tokenResponse.expires_in) || 300) - 60, 60) * 1000,
+  };
   return motTokenCache.token;
-}
-
-function isSearchConfigured(config) {
-  const provider = config.webSearchProvider.toLowerCase();
-  if (provider === 'google_cse') return Boolean(config.webSearchApiKey && config.webSearchEngineId);
-  if (provider === 'serpapi') return Boolean(config.webSearchApiKey);
-  return false;
-}
-
-async function runSearchQueries(queries, config) {
-  const merged = [];
-  const seen = new Set();
-  for (const query of queries) {
-    const items = await searchWeb(query, config);
-    for (const item of items) {
-      const link = extractSearchLink(item);
-      if (!link || seen.has(link)) continue;
-      merged.push({ query, item });
-      seen.add(link);
-    }
-  }
-  return merged;
-}
-
-async function searchWeb(query, config) {
-  const provider = config.webSearchProvider.toLowerCase();
-  if (provider === 'google_cse') {
-    const params = new URLSearchParams({ key: config.webSearchApiKey, cx: config.webSearchEngineId, q: query, num: String(Math.min(config.webSearchMaxResults, 10)) });
-    const response = await getJson(`${GOOGLE_CSE_URL}?${params.toString()}`, { timeoutSeconds: config.requestTimeoutSeconds });
-    return response?.items || [];
-  }
-  if (provider === 'serpapi') {
-    const params = new URLSearchParams({ engine: 'google', q: query, api_key: config.webSearchApiKey, num: String(config.webSearchMaxResults) });
-    const response = await getJson(`${SERPAPI_URL}?${params.toString()}`, { timeoutSeconds: config.requestTimeoutSeconds });
-    return response?.organic_results || [];
-  }
-  throw new ExternalServiceError(`Unsupported WEB_SEARCH_PROVIDER: ${config.webSearchProvider}`);
-}
-
-function buildSearchQueries(registration, vehicleSummary) {
-  const base = `"${registration}"`;
-  const make = String(vehicleSummary.make || '').trim();
-  const model = String(vehicleSummary.model || '').trim();
-  const makeModel = [make, model].filter(Boolean).join(' ');
-  const queries = [base, `${base} advert OR listing OR auction OR sale`, `${base} recall OR defect OR investigation`];
-  if (makeModel) queries.push(`${base} "${makeModel}"`);
-  return queries.slice(0, 3);
 }
 
 function buildVehicleSummary(registration, sample, dvlaData) {
@@ -175,46 +163,120 @@ function buildMotHistory(sample, motData) {
         date: formatDate(item.completedDate || 'Unknown'),
         result: titlecaseWords(item.testResult || 'Unknown'),
         mileage: item.odometerValue || '-',
-        items: (item.rfrAndComments || []).map((defect) => `${titlecaseWords(defect.type || 'comment')}: ${defect.text || 'No detail provided'}`).concat((item.rfrAndComments || []).length ? [] : ['No defects or advisories recorded on this test entry.']),
+        items: (item.rfrAndComments || [])
+          .map((defect) => `${titlecaseWords(defect.type || 'comment')}: ${defect.text || 'No detail provided'}`)
+          .concat((item.rfrAndComments || []).length ? [] : ['No defects or advisories recorded on this test entry.']),
       }));
     }
   }
   if (sample.mot_history?.length) return sample.mot_history;
-  return [{ date: 'Awaiting MOT API connection', result: 'No live data', mileage: '-', items: ['Add the DVSA MOT API credentials in Netlify environment variables to pull failures, advisories, and mileage trends.'] }];
+  return [{
+    date: 'Awaiting MOT API connection',
+    result: 'No live data',
+    mileage: '-',
+    items: ['Add the DVSA MOT API credentials in Netlify environment variables to pull failures, advisories, and mileage trends.'],
+  }];
 }
 
 function buildRecalls(registration, sample, webFindings) {
   const recalls = [...(sample.recalls || [])];
-  if (!recalls.length) recalls.push({ status: 'Manual check', title: 'Official recall check', why_it_matters: 'Use the GOV.UK recall journey to confirm whether safety work is outstanding for this vehicle.', source_url: 'https://www.gov.uk/check-vehicle-recall' });
-  for (const item of webFindings.filter((finding) => finding.type === 'Recall').slice(0, 3)) recalls.push({ status: 'Open web signal', title: item.title, why_it_matters: item.excerpt, source_url: item.source_url });
-  recalls.push({ status: 'Official follow-up', title: `Check GOV.UK services for ${registration}`, why_it_matters: 'The GOV.UK recall page links to the registration-based service and the MOT history journey for the same vehicle.', source_url: 'https://www.gov.uk/check-vehicle-recall' });
+  if (!recalls.length) {
+    recalls.push({
+      status: 'Manual check',
+      title: 'Official recall check',
+      why_it_matters: 'Use the GOV.UK recall journey to confirm whether safety work is outstanding for this vehicle.',
+      source_url: 'https://www.gov.uk/check-vehicle-recall',
+    });
+  }
+  recalls.push({
+    status: 'Official follow-up',
+    title: `Check GOV.UK services for ${registration}`,
+    why_it_matters: 'Use GOV.UK recall and MOT journeys to confirm any unresolved safety work or relevant MOT context.',
+    source_url: 'https://www.gov.uk/check-vehicle-recall',
+  });
+  for (const item of webFindings.filter((finding) => finding.type === 'Recall link').slice(0, 1)) {
+    recalls.push({
+      status: 'Quick link',
+      title: item.title,
+      why_it_matters: item.excerpt,
+      source_url: item.source_url,
+    });
+  }
   return dedupeByKey(recalls, 'title');
 }
 
-function buildWebFindings(registration, sample, liveSearchData) {
-  let findings = [...(sample.web_findings || [])];
-  if (liveSearchData?.length) {
-    const liveItems = [];
-    for (const wrapped of liveSearchData) {
-      const item = wrapped.item;
-      const link = extractSearchLink(item);
-      if (!link) continue;
-      liveItems.push({ type: classifyFinding(item), title: extractSearchTitle(item), excerpt: extractSearchSnippet(item), source_url: link, confidence: scoreConfidence(registration, item) });
-    }
-    findings = dedupeByKey([...liveItems, ...findings], 'source_url');
-  }
-  if (findings.length) return findings.slice(0, 10);
-  return [{ type: 'Search workflow', title: `No indexed open-web evidence found yet for ${registration}`, excerpt: 'Add a search provider key in Netlify environment variables to populate adverts, auction pages, cached results, and other public references automatically.', source_url: `https://www.google.com/search?q=${encodeURIComponent(`"${registration}"`)}`, confidence: 'Low' }];
+function buildWebFindings(registration, sample, vehicleSummary) {
+  const quickLinks = buildQuickResearchLinks(registration, vehicleSummary);
+  const sampleFindings = (sample.web_findings || []).slice(0, 4);
+  return [...sampleFindings, ...quickLinks].slice(0, 12);
+}
+
+function buildQuickResearchLinks(registration, vehicleSummary) {
+  const make = String(vehicleSummary.make || '').trim();
+  const model = String(vehicleSummary.model || '').trim();
+  const makeModel = [make, model].filter(Boolean).join(' ');
+  const exact = `"${registration}"`;
+  const exactMakeModel = makeModel ? `${exact} "${makeModel}"` : exact;
+  return [
+    {
+      type: 'Search link',
+      title: 'Google exact registration search',
+      excerpt: 'Use this free search to look for any indexed references to the registration.',
+      source_url: `https://www.google.com/search?q=${encodeURIComponent(exact)}`,
+      confidence: 'Manual',
+    },
+    {
+      type: 'Search link',
+      title: 'Search adverts and listings',
+      excerpt: 'Look for dealer listings, classifieds, and sale pages mentioning the registration.',
+      source_url: `https://www.google.com/search?q=${encodeURIComponent(`${exactMakeModel} advert OR listing OR sale`)}`,
+      confidence: 'Manual',
+    },
+    {
+      type: 'Search link',
+      title: 'Search auction and salvage history',
+      excerpt: 'Look for auction, salvage, or disposal references linked to the registration.',
+      source_url: `https://www.google.com/search?q=${encodeURIComponent(`${exactMakeModel} auction OR salvage OR copart OR synetiq`)}`,
+      confidence: 'Manual',
+    },
+    {
+      type: 'Search link',
+      title: 'Search photos and image traces',
+      excerpt: 'Use image-oriented search terms to look for historic photos or gallery pages.',
+      source_url: `https://www.google.com/search?q=${encodeURIComponent(`${exactMakeModel} photo OR image OR gallery`)}`,
+      confidence: 'Manual',
+    },
+    {
+      type: 'Search link',
+      title: 'Search forum and social mentions',
+      excerpt: 'Look for public forum, social, or discussion references to the vehicle.',
+      source_url: `https://www.google.com/search?q=${encodeURIComponent(`${exactMakeModel} forum OR facebook OR instagram OR youtube`)}`,
+      confidence: 'Manual',
+    },
+    {
+      type: 'Recall link',
+      title: 'Open GOV.UK recall checker',
+      excerpt: 'Use the official registration-based recall journey for manual follow-up.',
+      source_url: 'https://www.gov.uk/check-vehicle-recall',
+      confidence: 'Official',
+    },
+  ];
 }
 
 function buildResearchFlags(motHistory, recalls, webFindings) {
   const flags = [];
   const recurring = summarizeMotTerms(motHistory);
   if (recurring) flags.push({ title: 'Recurring MOT themes', severity: 'Medium', detail: `Repeated MOT language spotted around: ${recurring}.` });
-  if (recalls.some((item) => ['open', 'manual check', 'official follow-up', 'open web signal'].includes(String(item.status || '').toLowerCase()))) flags.push({ title: 'Recall follow-up required', severity: 'High', detail: 'Recall-related signals are present. Confirm whether any manufacturer remedy was outstanding at the time of loss.' });
-  if (webFindings.some((item) => ['advert', 'auction', 'listing'].includes(String(item.type || '').toLowerCase()))) flags.push({ title: 'Historic listing evidence found', severity: 'Medium', detail: 'Listings can reveal prior damage, warning lights, modifications, or sale descriptions worth cross-checking.' });
-  if (webFindings.some((item) => item.type === 'Photo')) flags.push({ title: 'Photo trail available', severity: 'Low', detail: 'Public image results may help compare pre-loss condition or identify prior visible damage.' });
-  if (!flags.length) flags.push({ title: 'No strong flags yet', severity: 'Low', detail: 'The registration was processed, but richer signals depend on live keys and what the open web has indexed.' });
+  if (recalls.some((item) => ['open', 'manual check', 'official follow-up', 'quick link'].includes(String(item.status || '').toLowerCase()))) {
+    flags.push({ title: 'Recall follow-up required', severity: 'High', detail: 'Recall-related follow-up links are present. Confirm whether any manufacturer remedy was outstanding at the time of loss.' });
+  }
+  if (webFindings.some((item) => ['advert', 'auction', 'listing'].includes(String(item.type || '').toLowerCase()))) {
+    flags.push({ title: 'Historic listing evidence found', severity: 'Medium', detail: 'Listings can reveal prior damage, warning lights, modifications, or sale descriptions worth cross-checking.' });
+  }
+  if (webFindings.some((item) => item.type === 'Search link')) {
+    flags.push({ title: 'Manual open-web research available', severity: 'Low', detail: 'Free Google research links are ready for adverts, auctions, photos, and mentions.' });
+  }
+  if (!flags.length) flags.push({ title: 'No strong flags yet', severity: 'Low', detail: 'The registration was processed, but richer signals depend on official keys and manual open-web follow-up.' });
   return flags;
 }
 
@@ -231,7 +293,9 @@ function summarizeMotTerms(motHistory) {
 function formatDate(value) {
   if (!value) return 'Unknown';
   const date = new Date(String(value));
-  if (!Number.isNaN(date.getTime())) return new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(date);
+  if (!Number.isNaN(date.getTime())) {
+    return new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(date);
+  }
   return String(value).slice(0, 10);
 }
 
@@ -246,7 +310,12 @@ function truncate(value, limit) {
 }
 
 function stripHtml(value) {
-  return String(value || '').replace(/<script.*?<\/script>/gis, ' ').replace(/<style.*?<\/style>/gis, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return String(value || '')
+    .replace(/<script.*?<\/script>/gis, ' ')
+    .replace(/<style.*?<\/style>/gis, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function dedupeByKey(items, key) {
@@ -261,24 +330,6 @@ function dedupeByKey(items, key) {
   return unique;
 }
 
-function extractSearchLink(item) { return item.link || item.url || ''; }
-function extractSearchTitle(item) { return item.title || item.title_link || 'Untitled result'; }
-function extractSearchSnippet(item) { return truncate(item.snippet || (item.snippet_highlighted_words || [''])[0] || 'No snippet provided.', 220); }
-function classifyFinding(item) {
-  const text = [extractSearchTitle(item), extractSearchSnippet(item), extractSearchLink(item)].join(' ').toLowerCase();
-  if (['recall', 'safety defect', 'manufacturer notice'].some((term) => text.includes(term))) return 'Recall';
-  if (['auction', 'copart', 'synetiq', 'salvage'].some((term) => text.includes(term))) return 'Auction';
-  if (['photo', 'image', 'gallery'].some((term) => text.includes(term))) return 'Photo';
-  if (['advert', 'listing', 'autotrader', 'ebay', 'gumtree', 'motors.co.uk'].some((term) => text.includes(term))) return 'Advert';
-  if (['forum', 'facebook', 'instagram', 'youtube', 'x.com', 'twitter'].some((term) => text.includes(term))) return 'Mention';
-  return 'Listing';
-}
-function scoreConfidence(registration, item) {
-  const text = [extractSearchTitle(item), extractSearchSnippet(item), extractSearchLink(item)].join(' ').toUpperCase();
-  if (text.includes(registration)) return 'High';
-  if (text.replaceAll(' ', '').includes(registration.replaceAll(' ', ''))) return 'Medium';
-  return 'Low';
-}
 function escapeCsv(value) {
   const text = String(value ?? '');
   return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
