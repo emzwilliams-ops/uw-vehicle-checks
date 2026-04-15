@@ -1,0 +1,81 @@
+const SAMPLE_DATA = {
+  "vehicles": {
+    "AB12CDE": {
+      "vehicle_summary": {
+        "make": "Volkswagen",
+        "model": "Golf Match TDI",
+        "colour": "Blue",
+        "fuel_type": "Diesel",
+        "year_of_manufacture": 2014,
+        "mot_status": "Valid until 12 February 2027",
+        "tax_status": "Taxed",
+        "notes": "Demo data loaded. Replace with live DVLA and DVSA calls for production use."
+      },
+      "mot_history": [
+        {
+          "date": "14 February 2026",
+          "result": "Pass with advisories",
+          "mileage": "118,221",
+          "items": [
+            "Nearside front tyre worn close to legal limit.",
+            "Brake discs worn but not excessively thin."
+          ]
+        },
+        {
+          "date": "18 February 2025",
+          "result": "Fail",
+          "mileage": "109,402",
+          "items": [
+            "Offside rear brake imbalance across an axle.",
+            "Front suspension arm pin or bush excessively worn."
+          ]
+        },
+        {
+          "date": "24 February 2025",
+          "result": "Pass",
+          "mileage": "109,420",
+          "items": [
+            "Vehicle retested after brake and suspension repairs."
+          ]
+        }
+      ],
+      "recalls": [
+        {
+          "status": "Open",
+          "title": "Fuel rail pressure pulse damper may crack",
+          "why_it_matters": "Fuel leaks can be relevant to fire risk and sudden vehicle failure scenarios. Remedy completion should be confirmed.",
+          "source_url": "https://www.gov.uk/check-vehicle-recall"
+        }
+      ],
+      "web_findings": [
+        {
+          "type": "Advert",
+          "title": "Historic dealer advert referencing minor wheel-arch damage",
+          "excerpt": "Dealer listing described light cosmetic damage to rear quarter and included 12 exterior photos.",
+          "source_url": "https://example.com/adverts/ab12cde",
+          "confidence": "Medium"
+        },
+        {
+          "type": "Auction",
+          "title": "Auction archive entry with mechanical warning note",
+          "excerpt": "Archived auction notes mention engine management light present at intake.",
+          "source_url": "https://example.com/auction/ab12cde",
+          "confidence": "Medium"
+        }
+      ]
+    }
+  }
+};
+
+let cache;
+
+export async function getSampleData() {
+  if (cache) return cache;
+  cache = SAMPLE_DATA;
+  return cache;
+}
+
+export async function lookupSample(registration) {
+  const data = await getSampleData();
+  return data?.vehicles?.[registration] || null;
+}
