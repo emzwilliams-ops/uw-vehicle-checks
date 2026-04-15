@@ -100,7 +100,7 @@ function renderHome() {
           <button type="submit">Build report</button>
         </div>
       </label>
-      <p class="field-help">Searches live DVLA, MOT, and open-web sources when credentials are connected, and falls back to the included demo vehicle when needed.</p>
+      <p class="field-help">Searches live DVLA and MOT sources where connected, and includes built-in free research links for adverts, auctions, photos, and mentions.</p>
     </form>
     <section class="panel">
       <div class="panel-header"><div><p class="eyebrow">Saved reports</p><h2>Recent casework</h2></div></div>
@@ -205,7 +205,7 @@ function renderReport() {
       <section class="panel"><div class="panel-header"><div><p class="eyebrow">Recall checks</p><h2>Safety follow-up</h2></div></div><div class="stack">${recalls}</div></section>
     </div>
     <div class="two-column">
-      <section class="panel"><div class="panel-header"><div><p class="eyebrow">Open-web findings</p><h2>Listings, auctions, mentions and photos</h2></div></div><div class="stack">${findings}</div></section>
+      <section class="panel"><div class="panel-header"><div><p class="eyebrow">Research links</p><h2>Free open-web follow-up</h2></div></div><div class="stack">${findings}</div></section>
       <section class="panel"><div class="panel-header"><div><p class="eyebrow">Saved evidence</p><h2>Snapshots</h2></div></div><div class="stack">${snapshots || '<p class="empty-state">No saved snapshots yet. Save anything worth keeping in the file.</p>'}</div></section>
     </div>
     <section class="panel">
